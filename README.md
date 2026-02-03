@@ -103,8 +103,19 @@ settings:
 
 ## 실행
 
+### 프로덕션 (일반 실행)
+먼저 TypeScript 코드를 빌드해야 합니다.
+
 ```bash
+npm run build
 npm start
+```
+
+### 개발 모드
+코드를 수정하면서 바로 확인하고 싶을 때 사용합니다.
+
+```bash
+npm run dev
 ```
 
 ## 사용법
