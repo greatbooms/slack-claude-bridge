@@ -4,12 +4,16 @@
         {
             "type": "node",
             "request": "launch",
-            "name": "Start Slack-Claude Bridge",
+            "name": "Debug via Dist (Build)",
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}/index.js",
-            "console": "integratedTerminal",
+            "program": "${workspaceFolder}/dist/index.js",
+            "preLaunchTask": "npm: build",
+            "outFiles": [
+                "${workspaceFolder}/dist/**/*.js"
+            ],
+            "console": "internalConsole",
             "envFile": "${workspaceFolder}/.env"
         }
     ]
