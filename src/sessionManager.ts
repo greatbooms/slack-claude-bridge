@@ -9,6 +9,31 @@ const stripAnsi = (str: string): string => {
     return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 };
 
+// Clean terminal output: remove logo/banner and shorten long separators
+const cleanTerminalOutput = (output: string): string => {
+    const lines = output.split('\n');
+    const cleanedLines: string[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Skip Claude Code logo/banner only
+        if (trimmed.includes('▐▛') || trimmed.includes('▝▜') || trimmed.includes('▘▘')) continue;
+        if (trimmed.includes('Claude Code v')) continue;
+        if (trimmed.match(/^(Opus|Sonnet|Haiku)\s+\d+(\.\d+)?\s*·/)) continue;
+
+        // Shorten long separator lines (─) to prevent wrapping
+        if (/^─{10,}$/.test(trimmed)) {
+            cleanedLines.push('────────────────────────');
+            continue;
+        }
+
+        cleanedLines.push(line);
+    }
+
+    return cleanedLines.join('\n').trim();
+};
+
 // Use process.env.CLAUDE_PATH if available, otherwise a default path
 const CLAUDE_PATH = process.env.CLAUDE_PATH || '/usr/local/bin/claude'; // Defaulting to a common install path
 
@@ -40,7 +65,7 @@ function runTmuxCommand(args: string[]): Promise<string> {
 
         proc.on('close', (code) => {
             if (code === 0) resolve(stdout);
-            else reject(new Error(`Tmux error(code ${code}): ${stderr} `));
+            else reject(new Error(`Tmux error(code ${code}): ${stderr}`));
         });
     });
 }
@@ -52,7 +77,7 @@ export async function getOrCreateSession(
     initialPath?: string,
     forceNew: boolean = false
 ): Promise<Session> {
-    const sessionName = `claude_${userId} `;
+    const sessionName = `claude_${userId}`;
 
     // Check if session exists in memory
     if (sessions[userId]) {
@@ -64,10 +89,10 @@ export async function getOrCreateSession(
     try {
         await runTmuxCommand(['has-session', '-t', sessionName]);
         if (forceNew) {
-            console.log(`Killing existing tmux session: ${sessionName} `);
+            console.log(`Killing existing tmux session: ${sessionName}`);
             await runTmuxCommand(['kill-session', '-t', sessionName]);
         } else {
-            console.log(`Re - attaching to existing tmux session: ${sessionName} `);
+            console.log(`Re-attaching to existing tmux session: ${sessionName}`);
             const session = createSessionObject(userId, sessionName, client, channelId);
             sessions[userId] = session;
             session.startPolling();
@@ -80,13 +105,14 @@ export async function getOrCreateSession(
     let startDir = initialPath || process.cwd();
     if (!fs.existsSync(startDir)) startDir = process.env.HOME || '/';
 
-    console.log(`Creating new tmux session: ${sessionName} in ${startDir} `);
-
     try {
+        // Create session and start Claude in one command (like original JS)
         await runTmuxCommand([
             'new-session',
             '-d',
             '-s', sessionName,
+            '-x', '200',
+            '-y', '50',
             '-c', startDir,
             CLAUDE_PATH
         ]);
@@ -111,7 +137,7 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
         msgStartTime: 0,
 
         write: async (text: string) => {
-            console.log(`[TMUX] Sending keys to ${sessionName}: ${text} `);
+            console.log(`[TMUX] Sending keys to ${sessionName}: ${text}`);
 
             let keys: string[] = [];
             const lower = text.toLowerCase().trim();
@@ -144,7 +170,7 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
         },
 
         terminate: async () => {
-            console.log(`[TMUX] Terminating session ${sessionName} `);
+            console.log(`[TMUX] Terminating session ${sessionName}`);
             if (session.pollingInterval) clearInterval(session.pollingInterval);
             try {
                 await runTmuxCommand(['kill-session', '-t', sessionName]);
@@ -170,7 +196,8 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                     this.updateSlack(output, client, channelId);
 
                 } catch (err: any) {
-                    if (err.message && err.message.includes('find session')) {
+                    console.error("[TMUX POLL ERROR]", err);
+                    if (err.message && (err.message.includes('find session') || err.message.includes('no server running'))) {
                         console.log("Session died, stopping polling");
                         if (this.pollingInterval) clearInterval(this.pollingInterval);
                         if (sessions[userId]) delete sessions[userId];
@@ -189,21 +216,22 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                 this.slackTs = null;
             }
 
-            // Trim to last 3000 chars for Slack limit
-            const displayText = clean.length > 2500
-                ? "..." + clean.slice(-2500)
-                : clean;
+            // Clean terminal output (remove logo, long separators, status bar)
+            const cleaned = cleanTerminalOutput(clean);
+            const displayText = cleaned.length > 2500
+                ? "..." + cleaned.slice(-2500)
+                : cleaned;
 
             try {
                 const blockPayload = {
                     channel: channelId,
-                    text: "Terminal Output",
+                    text: "Claude Output",
                     blocks: [
                         {
                             type: "section",
                             text: {
                                 type: "mrkdwn",
-                                text: `* Claude Desktop(via Tmux) *\nSession: \`${this.sessionName}\``
+                                text: `*Claude Desktop (via Tmux)*\nSession: \`${this.sessionName}\``
                             }
                         },
                         {
