@@ -1,26 +1,35 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { App } from '@slack/bolt'; // Assuming @slack/bolt is used for the client type
+import { App } from '@slack/bolt';
+import { config } from './config';
+
+// Error types for notifications
+type ErrorType = 'session_died' | 'tmux_error' | 'slack_error';
 
 // Helper to strip ANSI codes
-const stripAnsi = (str: string): string => {
+export const stripAnsi = (str: string): string => {
     if (typeof str !== 'string') return str;
     return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
 };
 
-// Clean terminal output: remove logo/banner and shorten long separators
-const cleanTerminalOutput = (output: string): string => {
+// Clean terminal output: remove logo/banner, status bar, and shorten long separators
+export const cleanTerminalOutput = (output: string): string => {
     const lines = output.split('\n');
     const cleanedLines: string[] = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
 
-        // Skip Claude Code logo/banner only
+        // Skip Claude Code logo/banner
         if (trimmed.includes('▐▛') || trimmed.includes('▝▜') || trimmed.includes('▘▘')) continue;
         if (trimmed.includes('Claude Code v')) continue;
         if (trimmed.match(/^(Opus|Sonnet|Haiku)\s+\d+(\.\d+)?\s*·/)) continue;
+
+        // Skip status bar at bottom
+        if (trimmed.match(/^(Opus|Sonnet|Haiku)\s+\d+(\.\d+)?\s*\|/)) continue;
+        if (trimmed.startsWith('⏸') || trimmed.startsWith('▶')) continue;
+        if (trimmed.includes('/ide for')) continue;
 
         // Shorten long separator lines (─) to prevent wrapping
         if (/^─{10,}$/.test(trimmed)) {
@@ -34,8 +43,28 @@ const cleanTerminalOutput = (output: string): string => {
     return cleanedLines.join('\n').trim();
 };
 
-// Use process.env.CLAUDE_PATH if available, otherwise a default path
-const CLAUDE_PATH = process.env.CLAUDE_PATH || '/usr/local/bin/claude'; // Defaulting to a common install path
+// Error notification function
+async function notifyError(
+    client: any,
+    channelId: string,
+    errorType: ErrorType,
+    details?: string
+): Promise<void> {
+    const messages: Record<ErrorType, string> = {
+        session_died: '⚠️ Claude 세션이 종료되었습니다.',
+        tmux_error: '❌ Tmux 오류가 발생했습니다.',
+        slack_error: '⚠️ Slack 메시지 전송에 실패했습니다.'
+    };
+
+    try {
+        await client.chat.postMessage({
+            channel: channelId,
+            text: messages[errorType] + (details ? `\n\`${details}\`` : '')
+        });
+    } catch (err) {
+        console.error('Failed to send error notification:', err);
+    }
+}
 
 // Interface for our Session object
 export interface Session {
@@ -72,7 +101,7 @@ function runTmuxCommand(args: string[]): Promise<string> {
 
 export async function getOrCreateSession(
     userId: string,
-    client: any, // or specific Slack Client type, e.g., WebClient from @slack/web-api
+    client: any,
     channelId: string,
     initialPath?: string,
     forceNew: boolean = false
@@ -106,18 +135,19 @@ export async function getOrCreateSession(
     if (!fs.existsSync(startDir)) startDir = process.env.HOME || '/';
 
     try {
-        // Create session and start Claude in one command (like original JS)
+        // Create session and start Claude in one command
         await runTmuxCommand([
             'new-session',
             '-d',
             '-s', sessionName,
-            '-x', '200',
-            '-y', '50',
+            '-x', String(config.tmuxWidth),
+            '-y', String(config.tmuxHeight),
             '-c', startDir,
-            CLAUDE_PATH
+            config.claudePath
         ]);
     } catch (err) {
         console.error("Failed to create tmux session:", err);
+        await notifyError(client, channelId, 'tmux_error', 'Failed to create tmux session');
         throw err;
     }
 
@@ -128,7 +158,25 @@ export async function getOrCreateSession(
     return session;
 }
 
+// Format uptime string
+function formatUptime(startTime: number): string {
+    const elapsed = Date.now() - startTime;
+    const seconds = Math.floor(elapsed / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) {
+        return `${hours}h ${minutes % 60}m`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${seconds % 60}s`;
+    } else {
+        return `${seconds}s`;
+    }
+}
+
 function createSessionObject(userId: string, sessionName: string, client: any, channelId: string): Session {
+    const sessionStartTime = Date.now();
+
     const session: Session = {
         sessionName,
         lastSnapshot: '',
@@ -162,10 +210,9 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
 
             try {
                 await runTmuxCommand(['send-keys', '-t', sessionName, ...keys]);
-                // Optional: When user types distinct command, force new message block immediately?
-                // session.slackTs = null;
             } catch (err) {
                 console.error("Failed to send keys:", err);
+                await notifyError(client, channelId, 'tmux_error', 'Failed to send keys to tmux');
             }
         },
 
@@ -186,13 +233,14 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
             console.log(`[TMUX] Start polling for ${sessionName}`);
             this.pollingInterval = setInterval(async () => {
                 try {
-                    const output = await runTmuxCommand(['capture-pane', '-p', '-t', sessionName, '-S', '-50']);
+                    const output = await runTmuxCommand([
+                        'capture-pane', '-p', '-t', sessionName,
+                        '-S', `-${config.tmuxBufferLines}`
+                    ]);
 
                     if (output === this.lastSnapshot) return;
 
                     this.lastSnapshot = output;
-                    // Use 'this' or 'session' variable?
-                    // Safe to use 'this' here as it's a regular function method
                     this.updateSlack(output, client, channelId);
 
                 } catch (err: any) {
@@ -201,26 +249,48 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                         console.log("Session died, stopping polling");
                         if (this.pollingInterval) clearInterval(this.pollingInterval);
                         if (sessions[userId]) delete sessions[userId];
+                        await notifyError(client, channelId, 'session_died', sessionName);
                     }
                 }
-            }, 1000);
+            }, config.pollingIntervalMs);
         },
 
         updateSlack: async function (rawOutput: string, client: any, channelId: string) {
             const clean = stripAnsi(rawOutput);
             if (!clean.trim()) return;
 
-            // Rotate message every 60 seconds (create new bubble)
-            if (this.slackTs && (Date.now() - this.msgStartTime > 60000)) {
+            // Rotate message every messageRotationMs (create new bubble)
+            if (this.slackTs && (Date.now() - this.msgStartTime > config.messageRotationMs)) {
                 console.log("Creating new message block due to timeout");
                 this.slackTs = null;
             }
 
             // Clean terminal output (remove logo, long separators, status bar)
             const cleaned = cleanTerminalOutput(clean);
-            const displayText = cleaned.length > 2500
-                ? "..." + cleaned.slice(-2500)
+
+            // If output exceeds threshold, upload as file instead
+            if (cleaned.length > config.fileUploadThreshold) {
+                try {
+                    await client.files.uploadV2({
+                        channel_id: channelId,
+                        content: cleaned,
+                        filename: `claude_output_${Date.now()}.txt`,
+                        initial_comment: `Claude 출력이 길어 파일로 첨부합니다. (${cleaned.length}자)`
+                    });
+                    // Reset message tracking for next update
+                    this.slackTs = null;
+                    return;
+                } catch (err: any) {
+                    console.error("File upload failed, falling back to message:", err.message);
+                    // Fall through to regular message handling
+                }
+            }
+
+            const displayText = cleaned.length > config.maxMessageLength
+                ? "..." + cleaned.slice(-config.maxMessageLength)
                 : cleaned;
+
+            const uptimeStr = formatUptime(sessionStartTime);
 
             try {
                 const blockPayload = {
@@ -228,11 +298,28 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                     text: "Claude Output",
                     blocks: [
                         {
-                            type: "section",
+                            type: "header",
                             text: {
-                                type: "mrkdwn",
-                                text: `*Claude Desktop (via Tmux)*\nSession: \`${this.sessionName}\``
+                                type: "plain_text",
+                                text: "Claude Terminal",
+                                emoji: true
                             }
+                        },
+                        {
+                            type: "context",
+                            elements: [
+                                {
+                                    type: "mrkdwn",
+                                    text: `*Session:* \`${this.sessionName}\``
+                                },
+                                {
+                                    type: "mrkdwn",
+                                    text: `*Uptime:* ${uptimeStr}`
+                                }
+                            ]
+                        },
+                        {
+                            type: "divider"
                         },
                         {
                             type: "section",
@@ -247,7 +334,7 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                 if (!this.slackTs) {
                     const res = await client.chat.postMessage(blockPayload);
                     this.slackTs = res.ts as string;
-                    this.msgStartTime = Date.now(); // Reset timer
+                    this.msgStartTime = Date.now();
                 } else {
                     await client.chat.update({
                         ...blockPayload,
@@ -258,11 +345,11 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                 console.error("Slack update failed:", err.message);
                 if (err.data && err.data.error === 'message_not_found') {
                     this.slackTs = null;
+                } else {
+                    await notifyError(client, channelId, 'slack_error', err.message);
                 }
             }
         }
     };
     return session;
 }
-
-
