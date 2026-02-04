@@ -77,6 +77,7 @@ export interface Session {
     terminate: () => Promise<void>;
     startPolling: () => void;
     updateSlack: (rawOutput: string, client: any, channelId: string) => Promise<void>;
+    uploadFullOutput: (client: any, channelId: string) => Promise<void>;
 }
 
 const sessions: Record<string, Session> = {}; // userId -> session object
@@ -268,27 +269,12 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
             // Clean terminal output (remove logo, long separators, status bar)
             const cleaned = cleanTerminalOutput(clean);
 
-            // If output exceeds threshold, upload as file instead
-            if (cleaned.length > config.fileUploadThreshold) {
-                try {
-                    await client.files.uploadV2({
-                        channel_id: channelId,
-                        content: cleaned,
-                        filename: `claude_output_${Date.now()}.txt`,
-                        initial_comment: `Claude 출력이 길어 파일로 첨부합니다. (${cleaned.length}자)`
-                    });
-                    // Reset message tracking for next update
-                    this.slackTs = null;
-                    return;
-                } catch (err: any) {
-                    console.error("File upload failed, falling back to message:", err.message);
-                    // Fall through to regular message handling
-                }
-            }
-
-            const displayText = cleaned.length > config.maxMessageLength
+            let displayText = cleaned.length > config.maxMessageLength
                 ? "..." + cleaned.slice(-config.maxMessageLength)
                 : cleaned;
+
+            // Escape backticks to prevent breaking Slack code blocks
+            displayText = displayText.replace(/```/g, '` ` `');
 
             const uptimeStr = formatUptime(sessionStartTime);
 
@@ -348,6 +334,37 @@ function createSessionObject(userId: string, sessionName: string, client: any, c
                 } else {
                     await notifyError(client, channelId, 'slack_error', err.message);
                 }
+            }
+        },
+
+        uploadFullOutput: async function (client: any, channelId: string) {
+            try {
+                // 전체 tmux 히스토리 캡처 (-S - 는 처음부터)
+                const raw = await runTmuxCommand([
+                    'capture-pane', '-p', '-t', sessionName, '-S', '-'
+                ]);
+                const cleaned = cleanTerminalOutput(stripAnsi(raw));
+
+                if (!cleaned.trim()) {
+                    await client.chat.postMessage({
+                        channel: channelId,
+                        text: "📄 출력이 비어있습니다."
+                    });
+                    return;
+                }
+
+                await client.files.uploadV2({
+                    channel_id: channelId,
+                    content: cleaned,
+                    filename: `claude_full_${Date.now()}.txt`,
+                    initial_comment: `📄 전체 터미널 출력 (${cleaned.length}자)`
+                });
+            } catch (err: any) {
+                console.error("Full output upload failed:", err.message);
+                await client.chat.postMessage({
+                    channel: channelId,
+                    text: `❌ 파일 업로드 실패: ${err.message}`
+                });
             }
         }
     };

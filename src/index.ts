@@ -35,7 +35,22 @@ app.message(async ({ message, say, client }) => {
         return;
     }
 
-    const text = msg.text ? msg.text.trim() : "";
+    let text = msg.text ? msg.text.trim() : "";
+    if (!text) return;
+
+    // Remove Slack code block formatting (``` ... ```)
+    if (text.startsWith('```') && text.endsWith('```')) {
+        text = text.slice(3, -3).trim();
+    } else if (text.startsWith('```')) {
+        text = text.slice(3).trim();
+    } else if (text.endsWith('```')) {
+        text = text.slice(0, -3).trim();
+    }
+    // Also handle single backticks for inline code
+    if (text.startsWith('`') && text.endsWith('`') && !text.includes('\n')) {
+        text = text.slice(1, -1).trim();
+    }
+
     if (!text) return;
 
     // 2. Handle /cd or /open command (Switch Project)
@@ -93,6 +108,15 @@ app.message(async ({ message, say, client }) => {
             // And also tell slack to start new block
             session.slackTs = null;
             await say("🧹 Output cleared. Starting new block.");
+        }
+        return;
+    }
+
+    // Handle /full command - upload full terminal output as file
+    if (text === '/full' || text === 'full') {
+        const session = await getOrCreateSession(msg.user, client, msg.channel, undefined);
+        if (session) {
+            await session.uploadFullOutput(client, msg.channel);
         }
         return;
     }
