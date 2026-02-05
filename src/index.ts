@@ -101,10 +101,17 @@ async function downloadSlackFile(url: string, token: string): Promise<Buffer> {
 }
 
 /**
+ * Get the temp directory for slack images
+ */
+function getImageTempDir(): string {
+    return path.join(os.tmpdir(), 'slack-claude-images');
+}
+
+/**
  * Save image to temp directory and return path
  */
 async function saveImageToTemp(buffer: Buffer, filename: string): Promise<string> {
-    const tempDir = path.join(os.tmpdir(), 'slack-claude-images');
+    const tempDir = getImageTempDir();
     if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
     }
@@ -112,6 +119,58 @@ async function saveImageToTemp(buffer: Buffer, filename: string): Promise<string
     const filePath = path.join(tempDir, `${Date.now()}-${filename}`);
     fs.writeFileSync(filePath, buffer);
     return filePath;
+}
+
+/**
+ * Delete specific image files
+ */
+function deleteImages(imagePaths: string[]): void {
+    for (const imagePath of imagePaths) {
+        try {
+            if (fs.existsSync(imagePath)) {
+                fs.unlinkSync(imagePath);
+                console.log(`[Image] Deleted: ${imagePath}`);
+            }
+        } catch (err: any) {
+            console.error(`[Image] Failed to delete ${imagePath}:`, err.message);
+        }
+    }
+}
+
+/**
+ * Clean up all images in temp directory
+ * Returns the number of files deleted
+ */
+function cleanupAllImages(): { deleted: number; failed: number; totalSize: number } {
+    const tempDir = getImageTempDir();
+    let deleted = 0;
+    let failed = 0;
+    let totalSize = 0;
+
+    if (!fs.existsSync(tempDir)) {
+        return { deleted: 0, failed: 0, totalSize: 0 };
+    }
+
+    try {
+        const files = fs.readdirSync(tempDir);
+        for (const file of files) {
+            const filePath = path.join(tempDir, file);
+            try {
+                const stats = fs.statSync(filePath);
+                totalSize += stats.size;
+                fs.unlinkSync(filePath);
+                deleted++;
+                console.log(`[Cleanup] Deleted: ${file}`);
+            } catch (err: any) {
+                failed++;
+                console.error(`[Cleanup] Failed to delete ${file}:`, err.message);
+            }
+        }
+    } catch (err: any) {
+        console.error(`[Cleanup] Failed to read temp directory:`, err.message);
+    }
+
+    return { deleted, failed, totalSize };
 }
 
 /**
@@ -351,6 +410,7 @@ app.message(async ({ message, client }) => {
                 `• \`abort\` - Interrupt current operation\n` +
                 `• \`exit\` - Terminate session\n` +
                 `• \`clear\` - Clear message tracking\n` +
+                `• \`cleanup\` - Clean up temporary images\n` +
                 `• \`help\` - Show this help\n\n` +
                 `*Permission Modes*\n` +
                 `• \`default\` - Ask for tool approval\n` +
@@ -491,6 +551,24 @@ app.message(async ({ message, client }) => {
         await client.chat.postMessage({
             channel: channelId,
             ...simpleMessage('🧹 Message tracking cleared.')
+        });
+        return;
+    }
+
+    // cleanup - Clean up all temporary images
+    if (text === 'cleanup') {
+        const result = cleanupAllImages();
+        const sizeMB = (result.totalSize / (1024 * 1024)).toFixed(2);
+        const sizeKB = (result.totalSize / 1024).toFixed(1);
+        const sizeStr = result.totalSize >= 1024 * 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
+
+        const message = result.deleted > 0
+            ? `🧹 Image cleanup complete!\n• Deleted: ${result.deleted} file(s)\n• Freed: ${sizeStr}` + (result.failed > 0 ? `\n• Failed: ${result.failed} file(s)` : '')
+            : '🧹 No temporary images to clean up.';
+
+        await client.chat.postMessage({
+            channel: channelId,
+            ...simpleMessage(message)
         });
         return;
     }
@@ -690,6 +768,12 @@ app.message(async ({ message, client }) => {
             onComplete: async (sessionId) => {
                 console.log(`[SDK] Query completed. Session: ${sessionId}`);
 
+                // Auto-delete downloaded images after use
+                if (imagePaths.length > 0) {
+                    deleteImages(imagePaths);
+                    console.log(`[Image] Auto-deleted ${imagePaths.length} image(s) after completion`);
+                }
+
                 // Delete thinking indicator if no content was sent
                 if (!currentMessageTs) {
                     try {
@@ -705,6 +789,12 @@ app.message(async ({ message, client }) => {
 
             onError: async (err) => {
                 console.error('[SDK] Error:', err.message);
+
+                // Auto-delete downloaded images on error
+                if (imagePaths.length > 0) {
+                    deleteImages(imagePaths);
+                    console.log(`[Image] Auto-deleted ${imagePaths.length} image(s) after error`);
+                }
 
                 // Delete thinking indicator
                 try {
