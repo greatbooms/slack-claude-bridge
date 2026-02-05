@@ -7,7 +7,6 @@
 
 // Maximum text length for Slack blocks
 const MAX_TEXT_LENGTH = 2900;
-const MAX_CODE_LENGTH = 2500;
 
 /**
  * Escape special Slack mrkdwn characters
@@ -93,94 +92,6 @@ export function formatToolUse(toolName: string, input?: any): any[] {
 }
 
 /**
- * Format tool result
- */
-export function formatToolResult(toolName: string, result: string, isError: boolean = false): any[] {
-    if (!result || result.trim().length === 0) {
-        return [];
-    }
-
-    const truncated = result.length > MAX_CODE_LENGTH
-        ? result.slice(0, MAX_CODE_LENGTH) + '\n...(truncated)'
-        : result;
-
-    const emoji = isError ? '❌' : '✓';
-
-    return [
-        {
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: `${emoji} \`\`\`${escapeSlackText(truncated)}\`\`\``
-            }
-        }
-    ];
-}
-
-/**
- * Format session header
- */
-export function formatSessionHeader(sessionId: string | null, model?: string): any[] {
-    const blocks: any[] = [
-        {
-            type: "header",
-            text: {
-                type: "plain_text",
-                text: "Claude Agent",
-                emoji: true
-            }
-        }
-    ];
-
-    const contextElements: any[] = [];
-
-    if (sessionId) {
-        contextElements.push({
-            type: "mrkdwn",
-            text: `*Session:* \`${sessionId.slice(0, 8)}...\``
-        });
-    }
-
-    if (model) {
-        contextElements.push({
-            type: "mrkdwn",
-            text: `*Model:* ${model}`
-        });
-    }
-
-    if (contextElements.length > 0) {
-        blocks.push({
-            type: "context",
-            elements: contextElements
-        });
-        blocks.push({ type: "divider" });
-    }
-
-    return blocks;
-}
-
-/**
- * Format completion message
- */
-export function formatCompletion(tokenUsage?: { input: number; output: number }): any[] {
-    const parts: string[] = ['✅ *Complete*'];
-
-    if (tokenUsage) {
-        parts.push(`Tokens: ${tokenUsage.input + tokenUsage.output} (in: ${tokenUsage.input}, out: ${tokenUsage.output})`);
-    }
-
-    return [
-        {
-            type: "context",
-            elements: [{
-                type: "mrkdwn",
-                text: parts.join(' | ')
-            }]
-        }
-    ];
-}
-
-/**
  * Format error message
  */
 export function formatError(error: string): any[] {
@@ -212,13 +123,6 @@ function getToolEmoji(toolName: string): string {
         'AskUserQuestion': '❓'
     };
     return emojis[toolName] || '🔧';
-}
-
-/**
- * Combine multiple block arrays
- */
-export function combineBlocks(...blockArrays: any[][]): any[] {
-    return blockArrays.flat().filter(Boolean);
 }
 
 /**

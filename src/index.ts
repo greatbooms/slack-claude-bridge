@@ -33,7 +33,6 @@ import {
     formatThinking,
     formatToolUse,
     formatError,
-    formatCompletion,
     simpleMessage
 } from './slackFormatter';
 

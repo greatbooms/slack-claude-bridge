@@ -308,13 +308,6 @@ export function cancelUserApprovals(channelId: string): void {
     }
 }
 
-/**
- * Get count of pending approvals
- */
-export function getPendingCount(): number {
-    return pendingApprovals.size;
-}
-
 // ===== AskUserQuestion handling =====
 
 interface PendingQuestion {

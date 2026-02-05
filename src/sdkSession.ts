@@ -295,14 +295,6 @@ export function closeSession(sessionKey: string): boolean {
 }
 
 /**
- * Abort an active session (legacy, uses interrupt)
- * @deprecated Use interruptSession or closeSession instead
- */
-export function abortSession(sessionKey: string): boolean {
-    return interruptSession(sessionKey);
-}
-
-/**
  * Get session info
  */
 export function getSessionInfo(sessionKey: string): { sessionId: string | null; isActive: boolean } | null {
