@@ -137,6 +137,7 @@ npm run dev
 | `abort` | Interrupt current operation (immediate stop) |
 | `exit` | Terminate current session (full close) |
 | `clear` | Clear message tracking |
+| `cleanup` | Clean up all temporary images |
 
 > **Tip:** Paths support `~` expansion (e.g., `cd ~/workspace/my-project`)
 
@@ -171,6 +172,8 @@ You can send images with your messages for Claude to analyze:
 - Claude will use the Read tool to view and analyze the image
 
 Supported formats: JPEG, PNG, GIF, WebP
+
+Images are automatically deleted after Claude finishes processing (on both success and error). To manually clean up any remaining images, use the `cleanup` command.
 
 Example:
 ```
