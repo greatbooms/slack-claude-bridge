@@ -25,7 +25,7 @@ A bridge application that connects Slack to Claude using the Claude Agent SDK. S
 
 ```bash
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/greatbooms/slack-claude-bridge.git
 cd slack-claude-bridge
 
 # Install dependencies
